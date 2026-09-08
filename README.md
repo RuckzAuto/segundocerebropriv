@@ -31,8 +31,7 @@ Siga estes passos para fazer o deploy gratuito usando o [Render](https://render.
    - `TURSO_URL`
    - `TURSO_TOKEN`
    - Para a variável `RENDER_EXTERNAL_URL`, defina-a com a URL pública que o Render vai gerar para a sua aplicação (ex: `https://seu-projeto.onrender.com`).
-   - `WHATSAPP_ALLOWED_NUMBER` (opcional — só preencha se quiser usar o WhatsApp também, ver seção abaixo).
-   - A senha do dashboard NÃO é uma env var — configure ela direto pela interface depois que o app estiver no ar (ver seção "Protegendo o dashboard com senha" abaixo).
+   - A senha do dashboard e o número do WhatsApp NÃO são env vars — configure os dois direto pela interface depois que o app estiver no ar (ver seções abaixo).
 
 ## Como usar pelo Telegram
 
@@ -46,11 +45,12 @@ Depois de tudo configurado e rodando:
 
 O bot também pode responder pelo WhatsApp, usando a mesma "memória" (pastas/notas) do Telegram, via a biblioteca [Baileys](https://github.com/WhiskeySockets/Baileys) — uma conexão não-oficial ao WhatsApp Web (sem custo, mas fora dos termos de uso oficiais do WhatsApp; use com moderação, sem spam, idealmente num número que não seja o seu principal).
 
-1. Defina `WHATSAPP_ALLOWED_NUMBER` com o número que vai poder falar com o bot (só dígitos + código do país, ex: `5511999999999`, sem `+`).
-2. Suba o servidor (local ou já deployado no Render).
-3. Abra o dashboard normal (`/`) — tem uma seção "WhatsApp" na barra lateral esquerda que mostra o status e, quando precisar, o QR Code direto ali (atualiza sozinha a cada 5 segundos).
-4. No WhatsApp do celular do número configurado: Configurações → Aparelhos conectados → Conectar um aparelho, e escaneie o QR Code que apareceu no dashboard.
-5. Pronto — a sessão fica salva no Turso, então não precisa escanear de novo depois (mesmo se o Render dormir e acordar). Só é preciso escanear de novo se você desconectar manualmente pelo celular.
+Tudo configurado direto pela interface, sem env var nenhuma:
+
+1. Suba o servidor (local ou já deployado no Render) e abra o dashboard normal (`/`) — tem uma seção "WhatsApp" na barra lateral esquerda.
+2. Assim que o servidor sobe, ele já tenta conectar sozinho e um QR Code aparece nessa seção (atualiza sozinha a cada 5 segundos). No WhatsApp do celular: Configurações → Aparelhos conectados → Conectar um aparelho, e escaneia.
+3. Logo abaixo do QR Code tem um campo pra digitar o número que vai poder falar com o bot (só dígitos + código do país, ex: `5511999999999`, sem `+`) — preenche e clica em "Salvar número". Enquanto esse número não estiver configurado, o bot fica conectado mas não responde ninguém.
+4. Pronto — tanto a sessão de login quanto o número configurado ficam salvos no Turso, então sobrevivem ao Render dormir/acordar sem precisar mexer em nada de novo. Só é preciso escanear um QR Code novo se você desconectar manualmente pelo celular, e só é preciso trocar o número se você quiser mudar quem fala com o bot (é só preencher o campo de novo, a qualquer momento).
 
 ## Protegendo o dashboard com senha
 

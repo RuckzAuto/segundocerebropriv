@@ -54,8 +54,9 @@ whatsapp_auth (file_key TEXT PK, data TEXT, updated_at)
   -- espelha exatamente o que o useMultiFileAuthState do Baileys salvaria em disco, só que em linha de banco.
 
 app_settings (key TEXT PK, value TEXT, updated_at)
-  -- configuracoes gerais do app, key-value generico. Hoje so usa a chave 'dashboard_password_hash'
-  -- (formato "salt:hash" em hex, gerado com crypto.scryptSync — NUNCA senha em texto puro).
+  -- configuracoes gerais do app, key-value generico, tudo configurado pela propria interface (nunca env var):
+  --   'dashboard_password_hash'   -> formato "salt:hash" em hex (crypto.scryptSync, NUNCA senha em texto puro)
+  --   'whatsapp_allowed_number'   -> so digitos + codigo do pais, ex: "5511999999999"
 ```
 
 ## O "cérebro" (`lib/brain.mjs`) — como funciona o roteamento
@@ -87,10 +88,13 @@ Se a segunda chamada da `consultar_pasta` falhar (erro de rede, rate limit da Gr
 
 ## WhatsApp (`lib/whatsapp.mjs` + `lib/whatsapp-auth.mjs`)
 
-- `connectWhatsapp()` é chamado no boot do servidor (`server.mjs`), só ativa se `WHATSAPP_ALLOWED_NUMBER` estiver setado no `.env` (formato: só dígitos com código do país, ex: `5511999999999`, sem `+` nem `@s.whatsapp.net`).
+Tanto a sessão de login quanto o número autorizado são configurados **direto pela interface, não por env var** (mesma decisão de design da senha do dashboard — ver seção abaixo). Isso significa que a conexão Baileys não depende de nenhuma configuração prévia: sobe o servidor e ela já tenta conectar sozinha.
+
+- `connectWhatsapp()` é chamado incondicionalmente no boot do servidor (`server.mjs`) — SEM checar nenhuma env var. Ele carrega o número autorizado atual do banco (`getAllowedNumber()`, pode ser `null` se ainda não foi configurado) pra uma variável em memória (`allowedNumber`) usada no filtro de mensagens.
 - Usa `useTursoAuthState()` (em vez do `useMultiFileAuthState` padrão do Baileys) pra ler/gravar a sessão de login no Turso — assim a sessão sobrevive ao Render dormir/acordar sem precisar escanear QR de novo toda vez. Cada "arquivo" que o Baileys normalmente salvaria em disco vira uma linha na tabela `whatsapp_auth`, serializada com `BufferJSON` (do próprio pacote `baileys`) pra preservar `Buffer`/`Uint8Array` corretamente.
-- Quando precisa de um novo login, gera um QR Code (PNG em base64, biblioteca `qrcode`) e guarda em memória, exposto via `GET /api/whatsapp/status` (JSON `{status, qr}`). O dashboard principal (`/`) tem um painel "WhatsApp" na barra lateral que faz polling nessa rota a cada 5s e mostra o QR Code/status direto ali — não existe mais uma página separada só pra isso (removida de propósito: o usuário não queria precisar saber/digitar uma URL específica).
-- No evento `messages.upsert`, só processa a mensagem se o número remetente (extraído do `remoteJid`, formato `<numero>@s.whatsapp.net`) bater exatamente com `WHATSAPP_ALLOWED_NUMBER` — qualquer outro número ou grupo (`@g.us`) é ignorado silenciosamente.
+- O número autorizado fica na tabela `app_settings` (chave `whatsapp_allowed_number`), lido/escrito via `getAllowedNumber()`/`setAllowedNumber(number)` exportados de `lib/whatsapp.mjs`. `setAllowedNumber` atualiza o banco E a variável em memória junto (pra valer imediatamente na próxima mensagem, sem precisar reiniciar a conexão — pareamento do WhatsApp e "quem pode falar com o bot" são coisas independentes).
+- Quando precisa de um novo login, gera um QR Code (PNG em base64, biblioteca `qrcode`) e guarda em memória, exposto via `GET /api/whatsapp/status` (JSON `{status, qr, allowedNumber}`). O dashboard principal (`/`) tem um painel "WhatsApp" na barra lateral que faz polling nessa rota a cada 5s, mostra o QR Code/status, e tem um formulário pra definir/trocar o número (pré-preenchido com o valor atual, `POST /api/whatsapp/set-number`) — tudo direto ali, sem página separada nem env var.
+- No evento `messages.upsert`, só processa a mensagem se `allowedNumber` estiver definido E o número remetente (extraído do `remoteJid`, formato `<numero>@s.whatsapp.net`) bater exatamente com ele — qualquer outro número, grupo (`@g.us`), ou nenhum número configurado ainda, é ignorado silenciosamente.
 - Mensagem válida vai direto pro mesmo `processMessage()` do `brain.mjs` que o Telegram usa (mesmas pastas/notas), com `chatId` prefixado `whatsapp_<numero>` pra manter o histórico de conversa separado do Telegram. Responde só texto puro por enquanto (sem suporte a áudio/voz no WhatsApp ainda, diferente do Telegram).
 - Se a conexão cair, reconecta sozinho automaticamente, EXCETO se foi um logout explícito (`DisconnectReason.loggedOut`) — nesse caso precisa escanear um QR Code novo.
 
@@ -120,7 +124,8 @@ DELETE /api/folders/:id             — remove pasta (400 se tiver subpasta)
 GET  /                              — dashboard HTML inline (vanilla JS, sem build step; inclui painel WhatsApp e senha)
 POST /api/chat                      — {message, chat_id} → processMessage direto, sem Telegram (útil pra testar)
 POST /webhook/:secret               — webhook do Telegram (secret = TELEGRAM_BOT_TOKEN)
-GET  /api/whatsapp/status           — {status, qr} do WhatsApp, consumido pelo painel do dashboard
+GET  /api/whatsapp/status           — {status, qr, allowedNumber} do WhatsApp, consumido pelo painel do dashboard
+POST /api/whatsapp/set-number       — {number} — define/troca o número autorizado do WhatsApp (banco, não env var)
 GET  /api/auth/status               — {passwordSet: boolean} — sempre público, mesmo com senha configurada
 POST /api/auth/set-password         — {password} — define/troca a senha do dashboard (hash no banco)
 ```
@@ -136,10 +141,9 @@ GROQ_MODEL=           # default no código: openai/gpt-oss-20b (whisper-large-v3
 TURSO_URL=            # se vazio, usa file:local.db (sem nenhuma credencial)
 TURSO_TOKEN=
 RENDER_EXTERNAL_URL=  # só necessário em produção, pra auto-registrar o webhook no boot
-WHATSAPP_ALLOWED_NUMBER= # só dígitos + código do país (ex: 5511999999999); vazio = integração desativada
 ```
 
-Nenhuma credencial real está hardcoded em nenhum arquivo. Nunca hardcode. A senha do dashboard NÃO é env var — ver seção "Autenticação do dashboard" (fica no banco, configurada pela UI).
+Nenhuma credencial real está hardcoded em nenhum arquivo. Nunca hardcode. A senha do dashboard e o número autorizado do WhatsApp NÃO são env vars — ficam no banco (`app_settings`), configurados pela própria UI (ver seções "Autenticação do dashboard" e "WhatsApp").
 
 ## Bugs já resolvidos (não reintroduzir)
 

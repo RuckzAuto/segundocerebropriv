@@ -3,7 +3,7 @@ import { db, initDb } from './lib/db.mjs';
 import crypto from 'crypto';
 import { processMessage } from './lib/brain.mjs';
 import { handleUpdate, telegramRequest } from './lib/telegram.mjs';
-import { connectWhatsapp, getWhatsappStatus } from './lib/whatsapp.mjs';
+import { connectWhatsapp, getWhatsappStatus, setAllowedNumber } from './lib/whatsapp.mjs';
 
 const app = express();
 app.use(express.json());
@@ -71,6 +71,15 @@ app.post('/api/auth/set-password', async (req, res) => {
 
 app.get('/api/whatsapp/status', (req, res) => {
   res.json(getWhatsappStatus());
+});
+
+app.post('/api/whatsapp/set-number', async (req, res) => {
+  const { number } = req.body;
+  if (!number || !/^\d{8,15}$/.test(number)) {
+    return res.status(400).json({ error: 'Número inválido. Use só dígitos + código do país (ex: 5511999999999).' });
+  }
+  await setAllowedNumber(number);
+  res.json({ success: true });
 });
 
 app.get('/health', (req, res) => {
@@ -258,6 +267,11 @@ app.get('/', (req, res) => {
     <div id="whatsapp-panel">
       <div id="whatsapp-status" style="margin-bottom: 8px;">Carregando...</div>
       <img id="whatsapp-qr-img" style="display: none; max-width: 100%; border-radius: 8px; margin-bottom: 8px;" />
+      <form id="whatsapp-number-form">
+        <input type="text" id="whatsapp-number-input" placeholder="Número (ex: 5511999999999)" pattern="\d{8,15}" required>
+        <button type="submit">Salvar número</button>
+      </form>
+      <p id="whatsapp-number-msg" style="font-size: 12px; margin-top: 4px;"></p>
     </div>
   </div>
   <div class="content">
@@ -556,21 +570,27 @@ app.get('/', (req, res) => {
     };
 
     let whatsappPollTimer = null;
+    let whatsappNumberPrefilled = false;
 
     async function loadWhatsappStatus() {
       try {
         const res = await fetch('/api/whatsapp/status');
-        const { status, qr } = await res.json();
+        const { status, qr, allowedNumber } = await res.json();
         const statusDiv = document.getElementById('whatsapp-status');
         const img = document.getElementById('whatsapp-qr-img');
+        const numberInput = document.getElementById('whatsapp-number-input');
 
         const labels = {
-          desligado: 'Desligado (defina WHATSAPP_ALLOWED_NUMBER)',
+          desligado: 'Iniciando conexão...',
           aguardando_qr: 'Escaneie o QR Code abaixo',
           conectado: '✅ Conectado',
           desconectado: 'Reconectando...'
         };
-        statusDiv.textContent = 'Status: ' + (labels[status] || status);
+        let statusText = labels[status] || status;
+        if (!allowedNumber) {
+          statusText += ' — configure um número abaixo pra ativar as respostas';
+        }
+        statusDiv.textContent = 'Status: ' + statusText;
 
         if (qr) {
           img.src = qr;
@@ -579,11 +599,41 @@ app.get('/', (req, res) => {
           img.style.display = 'none';
         }
 
+        if (allowedNumber && !whatsappNumberPrefilled && document.activeElement !== numberInput) {
+          numberInput.value = allowedNumber;
+          whatsappNumberPrefilled = true;
+        }
+
         if (!whatsappPollTimer) {
           whatsappPollTimer = setInterval(loadWhatsappStatus, 5000);
         }
       } catch (e) { console.error(e); }
     }
+
+    document.getElementById('whatsapp-number-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const number = document.getElementById('whatsapp-number-input').value.trim();
+      const msg = document.getElementById('whatsapp-number-msg');
+      try {
+        const res = await fetch('/api/whatsapp/set-number', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ number })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          msg.textContent = 'Número salvo!';
+          msg.style.color = '#35f4ff';
+          whatsappNumberPrefilled = false;
+        } else {
+          msg.textContent = data.error || 'Erro ao salvar número';
+          msg.style.color = '#ef233c';
+        }
+      } catch (e) {
+        msg.textContent = 'Erro ao salvar número';
+        msg.style.color = '#ef233c';
+      }
+    };
 
     checkAuthStatus();
     loadWhatsappStatus();

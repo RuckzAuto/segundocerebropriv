@@ -17,5 +17,3 @@ services:
         sync: false
       - key: TURSO_TOKEN
         sync: false
-      - key: WHATSAPP_ALLOWED_NUMBER
-        sync: false

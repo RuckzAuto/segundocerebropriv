@@ -32,7 +32,7 @@ Siga estes passos para fazer o deploy gratuito usando o [Render](https://render.
    - `TURSO_TOKEN`
    - Para a variável `RENDER_EXTERNAL_URL`, defina-a com a URL pública que o Render vai gerar para a sua aplicação (ex: `https://seu-projeto.onrender.com`).
    - `WHATSAPP_ALLOWED_NUMBER` (opcional — só preencha se quiser usar o WhatsApp também, ver seção abaixo).
-   - `DASHBOARD_PASSWORD` (fortemente recomendado — sem essa variável, o dashboard e a API ficam abertos pra qualquer pessoa que souber a URL; ver seção abaixo).
+   - A senha do dashboard NÃO é uma env var — configure ela direto pela interface depois que o app estiver no ar (ver seção "Protegendo o dashboard com senha" abaixo).
 
 ## Como usar pelo Telegram
 
@@ -48,14 +48,15 @@ O bot também pode responder pelo WhatsApp, usando a mesma "memória" (pastas/no
 
 1. Defina `WHATSAPP_ALLOWED_NUMBER` com o número que vai poder falar com o bot (só dígitos + código do país, ex: `5511999999999`, sem `+`).
 2. Suba o servidor (local ou já deployado no Render).
-3. Acesse `/whatsapp/qr` no navegador — vai aparecer um QR Code.
-4. No WhatsApp do celular do número configurado: Configurações → Aparelhos conectados → Conectar um aparelho, e escaneie o QR Code.
+3. Abra o dashboard normal (`/`) — tem uma seção "WhatsApp" na barra lateral esquerda que mostra o status e, quando precisar, o QR Code direto ali (atualiza sozinha a cada 5 segundos).
+4. No WhatsApp do celular do número configurado: Configurações → Aparelhos conectados → Conectar um aparelho, e escaneie o QR Code que apareceu no dashboard.
 5. Pronto — a sessão fica salva no Turso, então não precisa escanear de novo depois (mesmo se o Render dormir e acordar). Só é preciso escanear de novo se você desconectar manualmente pelo celular.
 
 ## Protegendo o dashboard com senha
 
-Por padrão, o dashboard (`/`), a API (`/api/*`) e a página do QR Code (`/whatsapp/qr`) ficam **abertos pra qualquer pessoa** que souber a URL — não tem cadastro de usuário nenhum. Pra proteger:
+Por padrão, o dashboard (`/`) e a API (`/api/*`) ficam **abertos pra qualquer pessoa** que souber a URL — não tem cadastro de usuário nenhum. A senha **não é configurada por env var nem fica no código/GitHub** — é definida direto pela interface, e fica guardada (com hash, nunca em texto puro) no seu banco Turso:
 
-1. Defina `DASHBOARD_PASSWORD` no `.env` (local) ou nas env vars do Render (produção) com a senha que quiser.
-2. Ao acessar o dashboard pelo navegador, vai aparecer um popup padrão pedindo usuário e senha — o usuário pode ser qualquer coisa (ex: `admin`), a senha é o valor que você definiu.
-3. **O webhook do Telegram (`/webhook/:secret`) e a conexão do WhatsApp continuam funcionando normalmente sem essa senha** — a proteção é só pra quem acessa pelo navegador. Se `DASHBOARD_PASSWORD` não estiver definida, o dashboard continua aberto (útil pra testar localmente sem configurar nada).
+1. Assim que você abrir o dashboard pela primeira vez (sem senha nenhuma configurada ainda), vai aparecer um aviso "⚠️ Configure uma senha" com um campo pra digitar. Preenche e clica em "Salvar senha".
+2. A partir daí, toda vez que alguém (inclusive você) acessar o dashboard, o navegador vai pedir usuário e senha (popup padrão do navegador) — o usuário pode ser qualquer coisa (ex: `admin`), a senha é a que você acabou de definir.
+3. **O webhook do Telegram (`/webhook/:secret`) e a conexão do WhatsApp continuam funcionando normalmente sem essa senha** — a proteção é só pra quem acessa pelo navegador.
+4. Pra trocar a senha depois, entra no dashboard normalmente (com a senha atual) e clica em "Trocar senha" na seção "🔒 Segurança" na barra lateral.

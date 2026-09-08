@@ -10,23 +10,67 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3000;
 
-function requireDashboardAuth(req, res, next) {
-  const password = process.env.DASHBOARD_PASSWORD;
-  if (!password) return next(); // sem senha configurada = sem protecao (modo dev local)
-
-  const auth = req.headers.authorization || '';
-  const expected = 'Basic ' + Buffer.from(`admin:${password}`).toString('base64');
-  if (auth === expected) return next();
-
-  res.set('WWW-Authenticate', 'Basic realm="Segundo Cerebro"');
-  return res.status(401).send('Autenticação necessária');
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const hash = crypto.scryptSync(password, salt, 64).toString('hex');
+  return `${salt}:${hash}`;
 }
 
-// Protege o dashboard e a API, mas NUNCA o webhook do Telegram (Telegram nao manda senha)
-// nem o healthcheck (usado por monitoramento externo).
-app.use((req, res, next) => {
-  if (req.path === '/health' || req.path.startsWith('/webhook/')) return next();
-  return requireDashboardAuth(req, res, next);
+function verifyPassword(password, stored) {
+  const [salt, hash] = stored.split(':');
+  const candidate = crypto.scryptSync(password, salt, 64).toString('hex');
+  return crypto.timingSafeEqual(Buffer.from(hash, 'hex'), Buffer.from(candidate, 'hex'));
+}
+
+async function getDashboardPasswordHash() {
+  const rs = await db.execute({ sql: "SELECT value FROM app_settings WHERE key = 'dashboard_password_hash'", args: [] });
+  return rs.rows.length > 0 ? rs.rows[0].value : null;
+}
+
+// Protege o dashboard e a API com senha guardada no banco (configurada pela propria interface,
+// nunca via env var/arquivo), mas NUNCA o webhook do Telegram (Telegram nao manda senha),
+// o healthcheck (monitoramento externo) nem a checagem publica de status da senha.
+app.use(async (req, res, next) => {
+  if (req.path === '/health' || req.path.startsWith('/webhook/') || req.path === '/api/auth/status') {
+    return next();
+  }
+  try {
+    const storedHash = await getDashboardPasswordHash();
+    if (!storedHash) return next(); // nenhuma senha configurada ainda = dashboard aberto
+
+    const match = /^Basic (.+)$/.exec(req.headers.authorization || '');
+    if (match) {
+      const decoded = Buffer.from(match[1], 'base64').toString('utf-8');
+      const password = decoded.slice(decoded.indexOf(':') + 1);
+      if (verifyPassword(password, storedHash)) return next();
+    }
+  } catch (err) {
+    console.error('[AUTH] Erro ao verificar senha:', err);
+  }
+  res.set('WWW-Authenticate', 'Basic realm="Segundo Cerebro"');
+  return res.status(401).send('Autenticação necessária');
+});
+
+app.get('/api/auth/status', async (req, res) => {
+  const hash = await getDashboardPasswordHash();
+  res.json({ passwordSet: !!hash });
+});
+
+app.post('/api/auth/set-password', async (req, res) => {
+  const { password } = req.body;
+  if (!password || password.length < 4) {
+    return res.status(400).json({ error: 'Senha muito curta (mínimo 4 caracteres)' });
+  }
+  const hash = hashPassword(password);
+  await db.execute({
+    sql: "INSERT INTO app_settings (key, value, updated_at) VALUES ('dashboard_password_hash', ?, CURRENT_TIMESTAMP) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=CURRENT_TIMESTAMP",
+    args: [hash]
+  });
+  res.json({ success: true });
+});
+
+app.get('/api/whatsapp/status', (req, res) => {
+  res.json(getWhatsappStatus());
 });
 
 app.get('/health', (req, res) => {
@@ -209,8 +253,24 @@ app.get('/', (req, res) => {
       </select>
       <button type="submit">Criar Pasta</button>
     </form>
+    <hr>
+    <h4>WhatsApp</h4>
+    <div id="whatsapp-panel">
+      <div id="whatsapp-status" style="margin-bottom: 8px;">Carregando...</div>
+      <img id="whatsapp-qr-img" style="display: none; max-width: 100%; border-radius: 8px; margin-bottom: 8px;" />
+    </div>
   </div>
   <div class="content">
+    <div id="password-setup-banner" style="display: none; margin-bottom: 20px; padding: 15px; border: 1px solid #ff3bd4; border-radius: 8px; box-shadow: 0 0 10px rgba(255,59,212,0.3);">
+      <h4 id="password-setup-title" style="margin-top: 0;">⚠️ Configure uma senha</h4>
+      <p id="password-setup-desc" style="font-size: 14px;">Seu Segundo Cérebro ainda está sem senha — qualquer pessoa com o link consegue acessar. Configure uma agora:</p>
+      <form id="password-setup-form" style="display: none;">
+        <input type="password" id="new-password" placeholder="Escolha uma senha (mínimo 4 caracteres)" required minlength="4">
+        <button type="submit">Salvar senha</button>
+      </form>
+      <button id="toggle-password-form-btn" type="button" style="display: none;">Trocar senha</button>
+      <p id="password-setup-msg" style="font-size: 13px; margin-top: 8px;"></p>
+    </div>
     <h3 id="current-folder-title" style="color: #666;">Selecione uma pasta à esquerda</h3>
     <button id="delete-folder-btn" class="btn-danger" style="display: none;">Excluir Pasta</button>
     
@@ -441,6 +501,92 @@ app.get('/', (req, res) => {
       } catch(e) { console.error(e); }
     };
 
+    async function checkAuthStatus() {
+      try {
+        const res = await fetch('/api/auth/status');
+        const { passwordSet } = await res.json();
+        document.getElementById('password-setup-banner').style.display = 'block';
+        const title = document.getElementById('password-setup-title');
+        const desc = document.getElementById('password-setup-desc');
+        const form = document.getElementById('password-setup-form');
+        const toggleBtn = document.getElementById('toggle-password-form-btn');
+
+        if (passwordSet) {
+          title.textContent = '🔒 Segurança';
+          desc.textContent = 'Seu Segundo Cérebro já está protegido por senha.';
+          form.style.display = 'none';
+          toggleBtn.style.display = 'inline-block';
+        } else {
+          title.textContent = '⚠️ Configure uma senha';
+          desc.textContent = 'Seu Segundo Cérebro ainda está sem senha — qualquer pessoa com o link consegue acessar. Configure uma agora:';
+          form.style.display = 'flex';
+          toggleBtn.style.display = 'none';
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    document.getElementById('toggle-password-form-btn').onclick = () => {
+      const form = document.getElementById('password-setup-form');
+      form.style.display = form.style.display === 'none' ? 'flex' : 'none';
+    };
+
+    document.getElementById('password-setup-form').onsubmit = async (e) => {
+      e.preventDefault();
+      const password = document.getElementById('new-password').value;
+      const msg = document.getElementById('password-setup-msg');
+      try {
+        const res = await fetch('/api/auth/set-password', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ password })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          msg.textContent = 'Senha salva! Recarregando a página...';
+          msg.style.color = '#35f4ff';
+          setTimeout(() => window.location.reload(), 1500);
+        } else {
+          msg.textContent = data.error || 'Erro ao salvar senha';
+          msg.style.color = '#ef233c';
+        }
+      } catch (e) {
+        msg.textContent = 'Erro ao salvar senha';
+        msg.style.color = '#ef233c';
+      }
+    };
+
+    let whatsappPollTimer = null;
+
+    async function loadWhatsappStatus() {
+      try {
+        const res = await fetch('/api/whatsapp/status');
+        const { status, qr } = await res.json();
+        const statusDiv = document.getElementById('whatsapp-status');
+        const img = document.getElementById('whatsapp-qr-img');
+
+        const labels = {
+          desligado: 'Desligado (defina WHATSAPP_ALLOWED_NUMBER)',
+          aguardando_qr: 'Escaneie o QR Code abaixo',
+          conectado: '✅ Conectado',
+          desconectado: 'Reconectando...'
+        };
+        statusDiv.textContent = 'Status: ' + (labels[status] || status);
+
+        if (qr) {
+          img.src = qr;
+          img.style.display = 'block';
+        } else {
+          img.style.display = 'none';
+        }
+
+        if (!whatsappPollTimer) {
+          whatsappPollTimer = setInterval(loadWhatsappStatus, 5000);
+        }
+      } catch (e) { console.error(e); }
+    }
+
+    checkAuthStatus();
+    loadWhatsappStatus();
     loadFolders();
   </script>
 </body>
@@ -458,33 +604,6 @@ app.post('/api/chat', async (req, res) => {
     console.error(err);
     res.status(500).json({ error: 'Erro no chat' });
   }
-});
-
-app.get('/whatsapp/qr', (req, res) => {
-  const { status, qr } = getWhatsappStatus();
-  res.send(`
-<!DOCTYPE html>
-<html lang="pt-BR">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta http-equiv="refresh" content="5">
-  <title>WhatsApp - Segundo Cérebro</title>
-  <style>
-    body { font-family: 'Bahnschrift', 'Segoe UI', sans-serif; background: #06070d; color: #edf7ff; padding: 20px; text-align: center; }
-    h2 { color: #35f4ff; text-shadow: 0 0 15px rgba(53,244,255,0.5); }
-    img { max-width: 300px; margin-top: 20px; border-radius: 8px; }
-    .status { font-size: 18px; margin-top: 10px; }
-  </style>
-</head>
-<body>
-  <h2>Status do WhatsApp</h2>
-  <div class="status">${status}</div>
-  ${qr ? `<img src="${qr}" alt="QR Code" />` : '<p>Nenhum QR Code pendente no momento.</p>'}
-  <p style="opacity: 0.6; font-size: 12px;">Esta página atualiza sozinha a cada 5 segundos.</p>
-</body>
-</html>
-  `);
 });
 
 app.post('/webhook/:secret', async (req, res) => {

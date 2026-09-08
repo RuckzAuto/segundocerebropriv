@@ -6,7 +6,7 @@ Este arquivo existe pra qualquer IA (Claude, Gemini, GPT, etc.) ou dev humano co
 
 **Segundo Cérebro**: bot pessoal no Telegram que funciona como sistema de notas em pastas/subpastas dinâmicas e ilimitadas, com um "cérebro" de IA (Groq) que decide sozinho onde encaixar cada mensagem (ou cria uma pasta nova), sem exigir que o usuário navegue manualmente. Também tem um dashboard web simples pra gerenciar tudo na mão.
 
-Não é um app genérico — é pensado pra uso pessoal de um único usuário (não tem multi-tenant, não tem autenticação de usuário nenhuma, qualquer um que souber o link do bot no Telegram consegue usar).
+Não é um app genérico — é pensado pra uso pessoal de um único usuário (não tem multi-tenant). O dashboard web pode ser protegido por senha (configurada pela própria interface, ver seção "Autenticação do dashboard"), mas o bot no Telegram/WhatsApp continua acessível a qualquer um que souber o link/número — não tem autenticação de usuário nesses canais.
 
 ## Stack
 
@@ -21,9 +21,9 @@ Não é um app genérico — é pensado pra uso pessoal de um único usuário (n
 
 ```
 segundo-cerebro/
-├── server.mjs          # Express: rotas de API, dashboard HTML inline, webhook do Telegram, QR do WhatsApp, boot
+├── server.mjs          # Express: rotas de API, dashboard HTML inline (com painel WhatsApp e senha embutidos), webhook do Telegram, boot
 ├── lib/
-│   ├── db.mjs           # cliente Turso/libSQL + initDb() (cria as 4 tabelas se não existirem)
+│   ├── db.mjs           # cliente Turso/libSQL + initDb() (cria as 5 tabelas se não existirem)
 │   ├── brain.mjs        # o "cérebro": processMessage(userText, chatId) — chama a Groq com function-calling
 │   ├── telegram.mjs     # telegramRequest/sendMessage/sendChatAction/handleUpdate + transcrição de áudio
 │   ├── whatsapp.mjs     # connectWhatsapp()/getWhatsappStatus() — conexão Baileys, filtro por número, plugado no brain.mjs
@@ -52,6 +52,10 @@ agent_state (id TEXT PK, data TEXT, updated_at)
 whatsapp_auth (file_key TEXT PK, data TEXT, updated_at)
   -- uma linha por "arquivo" de sessão do Baileys (creds, cada pre-key, cada session key, etc.)
   -- espelha exatamente o que o useMultiFileAuthState do Baileys salvaria em disco, só que em linha de banco.
+
+app_settings (key TEXT PK, value TEXT, updated_at)
+  -- configuracoes gerais do app, key-value generico. Hoje so usa a chave 'dashboard_password_hash'
+  -- (formato "salt:hash" em hex, gerado com crypto.scryptSync — NUNCA senha em texto puro).
 ```
 
 ## O "cérebro" (`lib/brain.mjs`) — como funciona o roteamento
@@ -85,14 +89,22 @@ Se a segunda chamada da `consultar_pasta` falhar (erro de rede, rate limit da Gr
 
 - `connectWhatsapp()` é chamado no boot do servidor (`server.mjs`), só ativa se `WHATSAPP_ALLOWED_NUMBER` estiver setado no `.env` (formato: só dígitos com código do país, ex: `5511999999999`, sem `+` nem `@s.whatsapp.net`).
 - Usa `useTursoAuthState()` (em vez do `useMultiFileAuthState` padrão do Baileys) pra ler/gravar a sessão de login no Turso — assim a sessão sobrevive ao Render dormir/acordar sem precisar escanear QR de novo toda vez. Cada "arquivo" que o Baileys normalmente salvaria em disco vira uma linha na tabela `whatsapp_auth`, serializada com `BufferJSON` (do próprio pacote `baileys`) pra preservar `Buffer`/`Uint8Array` corretamente.
-- Quando precisa de um novo login, gera um QR Code (PNG em base64, biblioteca `qrcode`) e guarda em memória — acesse `GET /whatsapp/qr` no navegador (local ou já deployado no Render) pra ver e escanear. A página faz auto-refresh a cada 5s.
+- Quando precisa de um novo login, gera um QR Code (PNG em base64, biblioteca `qrcode`) e guarda em memória, exposto via `GET /api/whatsapp/status` (JSON `{status, qr}`). O dashboard principal (`/`) tem um painel "WhatsApp" na barra lateral que faz polling nessa rota a cada 5s e mostra o QR Code/status direto ali — não existe mais uma página separada só pra isso (removida de propósito: o usuário não queria precisar saber/digitar uma URL específica).
 - No evento `messages.upsert`, só processa a mensagem se o número remetente (extraído do `remoteJid`, formato `<numero>@s.whatsapp.net`) bater exatamente com `WHATSAPP_ALLOWED_NUMBER` — qualquer outro número ou grupo (`@g.us`) é ignorado silenciosamente.
 - Mensagem válida vai direto pro mesmo `processMessage()` do `brain.mjs` que o Telegram usa (mesmas pastas/notas), com `chatId` prefixado `whatsapp_<numero>` pra manter o histórico de conversa separado do Telegram. Responde só texto puro por enquanto (sem suporte a áudio/voz no WhatsApp ainda, diferente do Telegram).
 - Se a conexão cair, reconecta sozinho automaticamente, EXCETO se foi um logout explícito (`DisconnectReason.loggedOut`) — nesse caso precisa escanear um QR Code novo.
 
 ## Autenticação do dashboard (`server.mjs`)
 
-Middleware global `requireDashboardAuth` (HTTP Basic Auth simples, usuário fixo `admin`, senha = `DASHBOARD_PASSWORD`) protege TODAS as rotas exceto `/health` e `/webhook/:secret` (esses dois precisam ficar abertos: health check é usado por monitoramento externo, e o Telegram não manda header de autenticação ao chamar o webhook — a proteção dele já é o secret na própria URL). Se `DASHBOARD_PASSWORD` não estiver setada, o middleware deixa passar tudo (modo dev local sem fricção). A conexão do WhatsApp via Baileys é um WebSocket de saída, não passa por rota HTTP nenhuma, então não é afetada por essa auth.
+A senha do dashboard **não é env var nem arquivo de config** — fica guardada com hash (`crypto.scryptSync`, nunca texto puro) na tabela `app_settings` (chave `dashboard_password_hash`), configurada pela própria interface web. Isso foi decisão explícita do usuário: como o repositório pode ir pro GitHub, ele não queria nenhuma senha em variável de ambiente/arquivo versionado, e queria configurar tudo pela UI depois de já estar rodando.
+
+- Middleware global (função anônima em `app.use`, async porque consulta o banco) protege TODAS as rotas exceto `/health`, `/webhook/:secret` e `/api/auth/status`. Os dois primeiros precisam ficar abertos (health check é usado por monitoramento externo; o Telegram não manda header de autenticação ao chamar o webhook — a proteção dele já é o secret na própria URL). `/api/auth/status` fica público de propósito, pra o frontend saber se deve mostrar o aviso de "configurar senha" ANTES de qualquer autenticação acontecer.
+- Se `app_settings.dashboard_password_hash` não existir ainda, o middleware deixa passar tudo (dashboard 100% aberto) — é o estado inicial logo após o primeiro deploy.
+- `GET /api/auth/status` → `{ passwordSet: boolean }` (sempre público).
+- `POST /api/auth/set-password` → `{ password }`, salva o hash. Como essa rota passa pelo middleware normal, só é acessível sem autenticação enquanto NENHUMA senha existe ainda (primeira configuração); depois de definida, trocar a senha exige já estar autenticado com a senha atual (Basic Auth do navegador) — não tem bypass.
+- Autenticação em si continua sendo **HTTP Basic Auth** (usuário fixo `admin`, senha = a que foi configurada) — o navegador mostra o popup nativo dele sozinho quando uma rota protegida retorna 401 com `WWW-Authenticate`.
+- A conexão do WhatsApp via Baileys é um WebSocket de saída, não passa por rota HTTP nenhuma, então não é afetada por essa auth de jeito nenhum.
+- No dashboard (`/`), a seção "🔒 Segurança"/"⚠️ Configure uma senha" na barra lateral chama `/api/auth/status` no carregamento da página pra decidir se mostra o formulário de definir senha (nenhuma senha ainda) ou só um botão "Trocar senha" que revela o mesmo formulário (senha já definida).
 
 ## Rotas HTTP (`server.mjs`)
 
@@ -105,11 +117,15 @@ POST /api/folders/:id/notes         — cria nota {content}
 PUT  /api/notes/:id                 — edita nota {content}
 DELETE /api/notes/:id               — remove uma nota
 DELETE /api/folders/:id             — remove pasta (400 se tiver subpasta)
-GET  /                              — dashboard HTML inline (vanilla JS, sem build step)
+GET  /                              — dashboard HTML inline (vanilla JS, sem build step; inclui painel WhatsApp e senha)
 POST /api/chat                      — {message, chat_id} → processMessage direto, sem Telegram (útil pra testar)
 POST /webhook/:secret               — webhook do Telegram (secret = TELEGRAM_BOT_TOKEN)
-GET  /whatsapp/qr                   — página com o QR Code atual do WhatsApp (ou status "conectado")
+GET  /api/whatsapp/status           — {status, qr} do WhatsApp, consumido pelo painel do dashboard
+GET  /api/auth/status               — {passwordSet: boolean} — sempre público, mesmo com senha configurada
+POST /api/auth/set-password         — {password} — define/troca a senha do dashboard (hash no banco)
 ```
+
+Todas as rotas acima (exceto `/health`, `/webhook/:secret` e `/api/auth/status`) exigem HTTP Basic Auth quando uma senha já foi configurada — ver seção "Autenticação do dashboard".
 
 ## Variáveis de ambiente (`.env.example`)
 
@@ -121,10 +137,9 @@ TURSO_URL=            # se vazio, usa file:local.db (sem nenhuma credencial)
 TURSO_TOKEN=
 RENDER_EXTERNAL_URL=  # só necessário em produção, pra auto-registrar o webhook no boot
 WHATSAPP_ALLOWED_NUMBER= # só dígitos + código do país (ex: 5511999999999); vazio = integração desativada
-DASHBOARD_PASSWORD=      # protege dashboard/API com HTTP Basic Auth; vazio = fica aberto (dev local)
 ```
 
-Nenhuma credencial real está hardcoded em nenhum arquivo. Nunca hardcode.
+Nenhuma credencial real está hardcoded em nenhum arquivo. Nunca hardcode. A senha do dashboard NÃO é env var — ver seção "Autenticação do dashboard" (fica no banco, configurada pela UI).
 
 ## Bugs já resolvidos (não reintroduzir)
 
@@ -147,7 +162,7 @@ Todo o histórico de desenvolvimento deste projeto foi testado via mocks de `glo
 
 ## Referência de arquitetura
 
-Esse projeto foi inspirado num projeto irmão do mesmo usuário, `C:\Users\Ruckz\Desktop\apps\agente\` (Telegram + Groq + Turso + Render, só que com categorias fixas — "Cofrinho" e "Calendário" — em vez de pastas dinâmicas). Vale olhar lá se precisar resolver algo relacionado a Telegram/Turso/Render que não seja específico da lógica de pastas.
+Esse projeto foi inspirado num projeto irmão do mesmo usuário, chamado `agente` (fora deste repositório — Telegram + Groq + Turso + Render, só que com categorias fixas — "Cofrinho" e "Calendário" — em vez de pastas dinâmicas). Vale olhar lá se precisar resolver algo relacionado a Telegram/Turso/Render que não seja específico da lógica de pastas.
 
 ## Deploy (Render)
 

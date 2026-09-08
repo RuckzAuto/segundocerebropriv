@@ -268,7 +268,7 @@ app.get('/', (req, res) => {
       <div id="whatsapp-status" style="margin-bottom: 8px;">Carregando...</div>
       <img id="whatsapp-qr-img" style="display: none; max-width: 100%; border-radius: 8px; margin-bottom: 8px;" />
       <form id="whatsapp-number-form">
-        <input type="text" id="whatsapp-number-input" placeholder="Número (ex: 5511999999999)" pattern="\d{8,15}" required>
+        <input type="text" id="whatsapp-number-input" placeholder="Número (ex: 5511999999999)" pattern="[0-9]{8,15}" required>
         <button type="submit">Salvar número</button>
       </form>
       <p id="whatsapp-number-msg" style="font-size: 12px; margin-top: 4px;"></p>

@@ -52,6 +52,8 @@ Tudo configurado direto pela interface, sem env var nenhuma:
 3. Logo abaixo do QR Code tem um campo pra digitar o número que vai poder falar com o bot (só dígitos + código do país, ex: `5511999999999`, sem `+`) — preenche e clica em "Salvar número". Enquanto esse número não estiver configurado, o bot fica conectado mas não responde ninguém.
 4. Pronto — tanto a sessão de login quanto o número configurado ficam salvos no Turso, então sobrevivem ao Render dormir/acordar sem precisar mexer em nada de novo. Só é preciso escanear um QR Code novo se você desconectar manualmente pelo celular, e só é preciso trocar o número se você quiser mudar quem fala com o bot (é só preencher o campo de novo, a qualquer momento).
 
+O bot também entende **áudio/mensagem de voz** no WhatsApp, igual no Telegram — manda um áudio que ele transcreve e responde normal.
+
 ## Protegendo o dashboard com senha
 
 Por padrão, o dashboard (`/`) e a API (`/api/*`) ficam **abertos pra qualquer pessoa** que souber a URL — não tem cadastro de usuário nenhum. A senha **não é configurada por env var nem fica no código/GitHub** — é definida direto pela interface, e fica guardada (com hash, nunca em texto puro) no seu banco Turso:

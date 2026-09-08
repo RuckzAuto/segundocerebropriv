@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: segundo-cerebro-bot
+    env: docker
+    plan: free
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: "openai/gpt-oss-20b"
+      - key: RENDER_EXTERNAL_URL
+        sync: false
+      - key: TURSO_URL
+        sync: false
+      - key: TURSO_TOKEN
+        sync: false
+      - key: WHATSAPP_ALLOWED_NUMBER
+        sync: false
+      - key: DASHBOARD_PASSWORD
+        sync: false
